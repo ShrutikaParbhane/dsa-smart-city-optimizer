@@ -409,17 +409,17 @@ public class MainGUIPastel {
                 String resourceType = (String) cbType.getSelectedItem();
                 int priority = pri.getSelectedIndex();
                 Request req = new Request(currentUser, resourceType, emergencyArea, priority);
-                Resource allocated = city.allocateResource(emergencyArea, resourceType);
+                Resource allocated = city.allocateResource(req);
                 if (allocated != null) {
                     req.allocatedResource = allocated.id;
                     req.status = "Assigned";
                     JOptionPane.showMessageDialog(null, "Allocated: " + allocated.id + " (Driver: " + allocated.driverName + ")");
                 } else {
-                    JOptionPane.showMessageDialog(null, "No available resource of that type.");
+                    JOptionPane.showMessageDialog(null, "No available resource of that type. Request has been queued.");
                 }
                 HistoryManager.addRequest(req);
                 appendRequestToFile(req);
-                appendOutput("Request created: " + req.type + " at " + req.location + " (priority " + req.priority + ")");
+                appendOutput("Request created: " + req.type + " at " + req.location + " (status: " + req.status + ")");
                 graphPanel.repaint();
             }
         });
@@ -439,6 +439,13 @@ public class MainGUIPastel {
         // initial refresh
         graphPanel.repaint();
         outputArea.setText("--- Welcome to the Dashboard ---\n");
+
+        // Sync queue dispatches with the GUI and database files
+        city.onQueueDispatchListener = pending -> {
+            appendOutput("[Queue Dispatch] Automatically assigned freed resource " + pending.allocatedResource + " to queued request from " + pending.requesterID);
+            updateRequestsFileStatusForQueued(pending);
+            graphPanel.repaint();
+        };
     }
 
     // ---------------- Graph panel (drawn map) ----------------
@@ -594,6 +601,40 @@ public class MainGUIPastel {
             bw.newLine();
         } catch (IOException e) {
             e.printStackTrace();
+        }
+    }
+
+    // Update queued request in requests.txt to Assigned
+    private static void updateRequestsFileStatusForQueued(Request req) {
+        File infile = new File(REQUESTS_FILE);
+        if (!infile.exists()) return;
+        File temp = new File(REQUESTS_FILE + ".tmp");
+        try (BufferedReader br = new BufferedReader(new FileReader(infile));
+             BufferedWriter bw = new BufferedWriter(new FileWriter(temp))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                String[] parts = line.split("\\|", -1);
+                if (parts.length >= 6 && parts[0].equals(req.requesterID) &&
+                    parts[1].equals(req.type) && parts[2].equals(req.location) &&
+                    parts[4].equals("Queued")) {
+                    parts[4] = "Assigned";
+                    parts[5] = req.allocatedResource;
+                    bw.write(String.join("|", parts));
+                } else {
+                    bw.write(line);
+                }
+                bw.newLine();
+            }
+        } catch (IOException ex) {
+            ex.printStackTrace();
+            return;
+        }
+        if (!infile.delete()) {
+            System.err.println("Could not delete original requests file.");
+            return;
+        }
+        if (!temp.renameTo(infile)) {
+            System.err.println("Could not rename temp requests file.");
         }
     }
 

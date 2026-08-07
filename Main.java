@@ -101,14 +101,37 @@ class Request {
     }
 }
 
+// ============================== CLASS: LRUCache ==============================
+class LRUCache<K, V> extends LinkedHashMap<K, V> {
+    private final int capacity;
+    LRUCache(int capacity) {
+        super(capacity, 0.75f, true);
+        this.capacity = capacity;
+    }
+    @Override
+    protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {
+        return size() > capacity;
+    }
+}
+
 // ============================== CLASS: CityGraph (WEIGHTED) ==============================
 class CityGraph {
     // Modified: adjacency map now stores Map<neighbor, distance>
     Map<String, Map<String, Integer>> adj = new HashMap<>();
     Map<String, List<Resource>> resources = new HashMap<>();
+    
+    // LRU Cache for shortest routes
+    LRUCache<String, List<String>> routeCache = new LRUCache<>(10);
+    
+    // Double-ended queue for priority emergency dispatches
+    Deque<Request> requestQueue = new ArrayDeque<>();
+    
+    // Decoupled listener/callback triggered when a queued request is auto-assigned
+    java.util.function.Consumer<Request> onQueueDispatchListener = null;
 
     void addArea(String area) {
         adj.putIfAbsent(area, new HashMap<>());
+        routeCache.clear();
     }
 
     // Modified: Add weighted road
@@ -119,6 +142,7 @@ class CityGraph {
         }
         adj.get(a).put(b, distance);
         adj.get(b).put(a, distance);
+        routeCache.clear();
         System.out.println("Road added between " + a + " and " + b + " with distance " + distance);
     }
 
@@ -158,10 +182,16 @@ class CityGraph {
         }
     }
 
-    // Modified: Dijkstra's algorithm for weighted shortest path
+    // Modified: Dijkstra's algorithm for weighted shortest path with LRU caching
     List<String> shortestPath(String start, String end) {
         if (!adj.containsKey(start) || !adj.containsKey(end)) {
             return new ArrayList<>();
+        }
+
+        String cacheKey = start + "->" + end;
+        if (routeCache.containsKey(cacheKey)) {
+            System.out.println("[Cache Hit] Retrieved route from LRU cache: " + cacheKey);
+            return new ArrayList<>(routeCache.get(cacheKey));
         }
 
         Map<String, Integer> dist = new HashMap<>();
@@ -196,10 +226,14 @@ class CityGraph {
         for (String at = end; at != null; at = parent.get(at))
             path.add(at);
         Collections.reverse(path);
+
+        routeCache.put(cacheKey, path);
         return path;
     }
 
-    Resource allocateResource(String emergencyArea, String type) {
+    Resource allocateResource(Request req) {
+        String emergencyArea = req.location;
+        String type = req.type;
         for (String area : resources.keySet()) {
             for (Resource r : resources.get(area)) {
                 if (r.type.equalsIgnoreCase(type) && r.available) {
@@ -216,27 +250,71 @@ class CityGraph {
                 }
             }
         }
-        System.out.println("No available resource of type " + type);
+        // If not allocated, add to queue
+        req.status = "Queued";
+        if (req.priority == 0) {
+            requestQueue.addFirst(req);
+        } else {
+            requestQueue.addLast(req);
+        }
+        System.out.println("No available resource of type " + type + ". Request queued (Priority: " + req.priority + ").");
         return null;
     }
 
     void markComplete(String id) {
-        for (List<Resource> list : resources.values()) {
-            for (Resource r : list) {
+        Resource freedResource = null;
+        String freedArea = null;
+        for (String area : resources.keySet()) {
+            for (Resource r : resources.get(area)) {
                 if (r.id.equals(id)) {
                     r.available = true;
+                    freedResource = r;
+                    freedArea = area;
                     System.out.println("Task completed for " + r.id);
-                    return;
+                    break;
                 }
             }
+            if (freedResource != null) break;
         }
-        System.out.println("No resource found with given ID.");
+
+        if (freedResource == null) {
+            System.out.println("No resource found with given ID.");
+            return;
+        }
+
+        // Check Deque requestQueue for any matching queued requests
+        Iterator<Request> it = requestQueue.iterator();
+        while (it.hasNext()) {
+            Request pending = it.next();
+            if (pending.type.equalsIgnoreCase(freedResource.type)) {
+                freedResource.available = false;
+                pending.allocatedResource = freedResource.id;
+                pending.status = "Assigned";
+
+                System.out.println("\n[Queue Dispatch] Automatically assigning freed resource " + freedResource.id + " to queued request from " + pending.requesterID);
+                List<String> path = shortestPath(freedArea, pending.location);
+                System.out.println("Driver: " + freedResource.driverName);
+                if (path.isEmpty()) {
+                    System.out.println("No direct path found.");
+                } else {
+                    System.out.println("Shortest path: " + path);
+                }
+
+                // Trigger listener callback for persistence sync in GUI
+                if (onQueueDispatchListener != null) {
+                    onQueueDispatchListener.accept(pending);
+                }
+
+                it.remove();
+                break;
+            }
+        }
     }
 }
 
 // ============================== CLASS: HistoryManager ==============================
 class HistoryManager {
-    private static Map<Integer, Request> allRequests = new HashMap<>();
+    private static Map<Integer, Request> allRequests = new TreeMap<>();
     private static int requestCounter = 1;
 
     static void addRequest(Request req) {
@@ -389,7 +467,7 @@ public class Main {
                             System.out.print("Enter priority (0=High, 1=Medium, 2=Low): ");
                             int pri = sc.nextInt();
                             Request req = new Request(userID, type, ea, pri);
-                            Resource allocated = city.allocateResource(ea, type);
+                            Resource allocated = city.allocateResource(req);
                             if (allocated != null) {
                                 req.allocatedResource = allocated.id;
                                 req.status = "Assigned";

@@ -8,11 +8,21 @@
 abc|Ambulance|f|0|Completed|123
 46|Ambulance|1|0|Completed|123
 46|Fire Brigade|7|0|Completed|123
-46|Fire Brigade|6|0|Queued|None
+46|Fire Brigade|6|0|Completed|1
 46|Police|5|0|Completed|123
 46|Ambulance|2|0|Completed|123
 46|Ambulance|1|0|Completed|123
-46|Ambulance|2|0|Queued|None
+46|Ambulance|2|0|Completed|123
 46|Ambulance|3|0|Completed|123
 46|Ambulance|4|0|Completed|123
 46|Ambulance|5|0|Completed|123
+46|Ambulance|4|0|Queued|None
+46|Ambulance|1|0|Completed|123
+46|Ambulance|2|0|Completed|123
+46|Ambulance|3|0|Queued|None
+46|Ambulance|4|0|Queued|None
+46|Fire Brigade|1|0|Completed|1
+46|Fire Brigade|1|2|Queued|None
+46|Fire Brigade|2|1|Completed|1
+46|Fire Brigade|3|0|Completed|1
+46|Police|4|0|Queued|None

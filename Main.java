@@ -382,7 +382,11 @@ class CityGraph {
         List<Request> candidates = new ArrayList<>();
         for (Request req : requestQueue) {
             if (req.type.equalsIgnoreCase(freedResource.type)) {
-                candidates.add(req);
+                // Ensure a valid path exists before considering this request for auto-dispatch
+                List<String> path = shortestPath(freedArea, req.location);
+                if (!path.isEmpty()) {
+                    candidates.add(req);
+                }
             }
         }
 

@@ -43,6 +43,9 @@ public class MainGUIPastel {
     private static GraphPanel graphPanel;
 
     public static void main(String[] args) {
+        // Load map network
+        city.loadMapFromFile("map.txt");
+
         // Load history and restore queued requests
         HistoryManager.loadHistoryFromFile(REQUESTS_FILE);
         for (Request r : HistoryManager.getAllRequests()) {
@@ -374,26 +377,28 @@ public class MainGUIPastel {
         btnShowResources.addActionListener(e -> outputArea.setText(getResourceString()));
 
         btnMarkComplete.addActionListener(e -> {
-            List<String> busyIds = new ArrayList<>();
-            for (List<Resource> list : city.resources.values()) {
-                for (Resource res : list) {
-                    if (!res.available) {
-                        busyIds.add(res.id);
-                    }
+            List<String> activeRequestsList = new ArrayList<>();
+            List<Integer> activeReqIds = new ArrayList<>();
+            for (Request r : HistoryManager.getAllRequests()) {
+                if ("Assigned".equalsIgnoreCase(r.status)) {
+                    activeRequestsList.add("Request #" + r.sequenceNum + " - " + r.type + " at " + r.location + " (" + r.allocatedResource + ")");
+                    activeReqIds.add(r.sequenceNum);
                 }
             }
-            if (busyIds.isEmpty()) {
-                JOptionPane.showMessageDialog(null, "No resources currently assigned to tasks.", "Information", JOptionPane.INFORMATION_MESSAGE);
+            if (activeRequestsList.isEmpty()) {
+                JOptionPane.showMessageDialog(null, "No active assigned requests found to complete.", "Information", JOptionPane.INFORMATION_MESSAGE);
                 return;
             }
-            Object[] options = busyIds.toArray();
-            String rid = (String) JOptionPane.showInputDialog(null, "Select resource ID to mark complete:", "Mark Task Complete",
+            Object[] options = activeRequestsList.toArray();
+            String selection = (String) JOptionPane.showInputDialog(null, "Select request to mark complete:", "Mark Task Complete",
                     JOptionPane.QUESTION_MESSAGE, null, options, options[0]);
-            if (rid != null) {
-                city.markComplete(rid);
-                HistoryManager.updateStatus(rid);
-                updateRequestsFileStatus(rid, "Completed");
-                appendOutput("Resource " + rid + " marked complete.");
+            if (selection != null) {
+                int index = activeRequestsList.indexOf(selection);
+                int reqId = activeReqIds.get(index);
+                city.markComplete(reqId);
+                HistoryManager.updateStatus(reqId);
+                updateRequestsFileStatus(reqId, "Completed");
+                appendOutput("Request #" + reqId + " marked complete.");
                 graphPanel.repaint();
             }
         });
@@ -607,8 +612,8 @@ public class MainGUIPastel {
     // Append request to requests.txt for persistence
     private static void appendRequestToFile(Request req) {
         try (BufferedWriter bw = new BufferedWriter(new FileWriter(REQUESTS_FILE, true))) {
-            // use pipe-separated format
-            String line = escape(req.requesterID) + "|" + escape(req.type) + "|" + escape(req.location) + "|" + req.priority + "|" + escape(req.status) + "|" + escape(req.allocatedResource);
+            // use pipe-separated format: RequestID|RequesterID|Type|Location|Priority|Status|AllocatedResource
+            String line = req.sequenceNum + "|" + escape(req.requesterID) + "|" + escape(req.type) + "|" + escape(req.location) + "|" + req.priority + "|" + escape(req.status) + "|" + escape(req.allocatedResource);
             bw.write(line);
             bw.newLine();
         } catch (IOException e) {
@@ -626,18 +631,16 @@ public class MainGUIPastel {
             String line;
             while ((line = br.readLine()) != null) {
                 String[] parts = line.split("\\|", -1);
-                if (parts.length >= 6 && parts[0].equals(req.requesterID) &&
-                    parts[1].equals(req.type) && parts[2].equals(req.location) &&
-                    parts[4].equals("Queued")) {
-                    parts[4] = "Assigned";
-                    parts[5] = req.allocatedResource;
+                if (parts.length >= 7 && Integer.parseInt(parts[0]) == req.sequenceNum) {
+                    parts[5] = "Assigned";
+                    parts[6] = req.allocatedResource;
                     bw.write(String.join("|", parts));
                 } else {
                     bw.write(line);
                 }
                 bw.newLine();
             }
-        } catch (IOException ex) {
+        } catch (IOException | NumberFormatException ex) {
             ex.printStackTrace();
             return;
         }
@@ -651,7 +654,7 @@ public class MainGUIPastel {
     }
 
     // Update status in requests.txt when marking complete
-    private static void updateRequestsFileStatus(String resourceId, String newStatus) {
+    private static void updateRequestsFileStatus(int requestId, String newStatus) {
         File infile = new File(REQUESTS_FILE);
         if (!infile.exists()) return;
         File temp = new File(REQUESTS_FILE + ".tmp");
@@ -660,15 +663,15 @@ public class MainGUIPastel {
             String line;
             while ((line = br.readLine()) != null) {
                 String[] parts = line.split("\\|", -1);
-                if (parts.length >= 6 && parts[5].equals(resourceId)) {
-                    parts[4] = newStatus;
+                if (parts.length >= 7 && Integer.parseInt(parts[0]) == requestId) {
+                    parts[5] = newStatus;
                     bw.write(String.join("|", parts));
                 } else {
                     bw.write(line);
                 }
                 bw.newLine();
             }
-        } catch (IOException ex) {
+        } catch (IOException | NumberFormatException ex) {
             ex.printStackTrace();
             return;
         }

@@ -171,6 +171,79 @@ class CityGraph {
     // Decoupled listener/callback triggered when a queued request is auto-assigned
     java.util.function.Consumer<Request> onQueueDispatchListener = null;
 
+    void saveMapToFile(String filename) {
+        try (BufferedWriter bw = new BufferedWriter(new FileWriter(filename))) {
+            for (String area : adj.keySet()) {
+                bw.write("AREA|" + area);
+                bw.newLine();
+            }
+            Set<String> writtenRoads = new HashSet<>();
+            for (String u : adj.keySet()) {
+                for (Map.Entry<String, Integer> e : adj.get(u).entrySet()) {
+                    String v = e.getKey();
+                    String roadKey = u.compareTo(v) < 0 ? u + "-" + v : v + "-" + u;
+                    if (!writtenRoads.contains(roadKey)) {
+                        bw.write("ROAD|" + u + "|" + v + "|" + e.getValue());
+                        bw.newLine();
+                        writtenRoads.add(roadKey);
+                    }
+                }
+            }
+            for (String center : resources.keySet()) {
+                bw.write("CENTER|" + center);
+                bw.newLine();
+                for (Resource r : resources.get(center)) {
+                    bw.write("RESOURCE|" + center + "|" + r.type + "|" + r.id + "|" + r.driverName + "|" + r.available);
+                    bw.newLine();
+                }
+            }
+        } catch (IOException e) {
+            System.out.println("Error saving map state to file.");
+        }
+    }
+
+    void loadMapFromFile(String filename) {
+        File file = new File(filename);
+        if (!file.exists()) return;
+        adj.clear();
+        resources.clear();
+        routeCache.clear();
+        try (BufferedReader br = new BufferedReader(new FileReader(file))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                String[] parts = line.split("\\|", -1);
+                if (parts.length < 2) continue;
+                String tag = parts[0];
+                if (tag.equals("AREA")) {
+                    adj.putIfAbsent(parts[1], new HashMap<>());
+                } else if (tag.equals("ROAD") && parts.length >= 4) {
+                    String a = parts[1];
+                    String b = parts[2];
+                    int dist = Integer.parseInt(parts[3]);
+                    adj.putIfAbsent(a, new HashMap<>());
+                    adj.putIfAbsent(b, new HashMap<>());
+                    adj.get(a).put(b, dist);
+                    adj.get(b).put(a, dist);
+                } else if (tag.equals("CENTER")) {
+                    resources.putIfAbsent(parts[1], new ArrayList<>());
+                } else if (tag.equals("RESOURCE") && parts.length >= 6) {
+                    String center = parts[1];
+                    String type = parts[2];
+                    String id = parts[3];
+                    String driver = parts[4];
+                    boolean avail = Boolean.parseBoolean(parts[5]);
+                    
+                    Resource r = new Resource(type, id, driver);
+                    r.available = avail;
+                    resources.putIfAbsent(center, new ArrayList<>());
+                    resources.get(center).add(r);
+                }
+            }
+        } catch (IOException | NumberFormatException e) {
+            System.out.println("Error loading map state from file.");
+        }
+    }
+
     void addArea(String area) {
         if (adj.containsKey(area)) {
             System.out.println("Area already exists!");
@@ -178,10 +251,15 @@ class CityGraph {
         }
         adj.put(area, new HashMap<>());
         routeCache.clear();
+        saveMapToFile("map.txt");
     }
 
     // Modified: Add weighted road
     void addRoad(String a, String b, int distance) {
+        if (distance <= 0) {
+            System.out.println("Error: Road distance must be greater than zero!");
+            return;
+        }
         if (!adj.containsKey(a) || !adj.containsKey(b)) {
             System.out.println("One or both areas not found.");
             return;
@@ -194,6 +272,7 @@ class CityGraph {
         adj.get(b).put(a, distance);
         routeCache.clear();
         System.out.println("Road added between " + a + " and " + b + " with distance " + distance);
+        saveMapToFile("map.txt");
     }
 
     void addResourceCenter(String area) {
@@ -203,6 +282,7 @@ class CityGraph {
         }
         resources.put(area, new ArrayList<>());
         System.out.println("Resource center added at " + area);
+        saveMapToFile("map.txt");
     }
 
     void addResource(String area, Resource r) {
@@ -221,6 +301,7 @@ class CityGraph {
         }
         resources.get(area).add(r);
         System.out.println("Resource added successfully at " + area);
+        saveMapToFile("map.txt");
     }
 
     void displayMap() {
@@ -357,31 +438,42 @@ class CityGraph {
         return null;
     }
 
-    void markComplete(String id) {
+    void markComplete(int requestId) {
+        Request targetReq = null;
+        for (Request r : HistoryManager.getAllRequests()) {
+            if (r.sequenceNum == requestId) {
+                targetReq = r;
+                break;
+            }
+        }
+
+        if (targetReq == null || !"Assigned".equalsIgnoreCase(targetReq.status)) {
+            System.out.println("No active assigned request found with ID: " + requestId);
+            return;
+        }
+
         Resource freedResource = null;
         String freedArea = null;
         for (String area : resources.keySet()) {
             for (Resource r : resources.get(area)) {
-                if (r.id.equals(id)) {
+                if (r.id.equals(targetReq.allocatedResource)) {
                     r.available = true;
                     freedResource = r;
                     freedArea = area;
-                    System.out.println("Task completed for " + r.id);
+                    System.out.println("Task completed for resource " + r.id + " from request #" + requestId);
                     break;
                 }
             }
             if (freedResource != null) break;
         }
 
-        if (freedResource == null) {
-            System.out.println("No resource found with given ID.");
-            return;
-        }
+        targetReq.status = "Completed";
+        saveMapToFile("map.txt");
 
         // Priority + Nearest scheduling optimization for waiting requests in the queue
         List<Request> candidates = new ArrayList<>();
         for (Request req : requestQueue) {
-            if (req.type.equalsIgnoreCase(freedResource.type)) {
+            if (freedResource != null && req.type.equalsIgnoreCase(freedResource.type)) {
                 // Ensure a valid path exists before considering this request for auto-dispatch
                 List<String> path = shortestPath(freedArea, req.location);
                 if (!path.isEmpty()) {
@@ -390,7 +482,7 @@ class CityGraph {
             }
         }
 
-        if (!candidates.isEmpty()) {
+        if (!candidates.isEmpty() && freedResource != null) {
             final String sourceArea = freedArea;
             candidates.sort((r1, r2) -> {
                 // 1. Priority (High priority first)
@@ -426,6 +518,7 @@ class CityGraph {
             }
 
             requestQueue.remove(pending);
+            saveMapToFile("map.txt");
         }
     }
 }
@@ -439,9 +532,9 @@ class HistoryManager {
         allRequests.put(requestCounter++, req);
     }
 
-    static void updateStatus(String resourceID) {
+    static void updateStatus(int requestId) {
         for (Request r : allRequests.values()) {
-            if (r.allocatedResource.equals(resourceID)) {
+            if (r.sequenceNum == requestId) {
                 r.status = "Completed";
             }
         }
@@ -600,10 +693,10 @@ public class Main {
                         }
                         case 6 -> city.showAllResources();
                         case 7 -> {
-                            System.out.print("Enter resource ID: ");
-                            String id = sc.next();
-                            city.markComplete(id);
-                            HistoryManager.updateStatus(id);
+                            System.out.print("Enter Request ID to complete: ");
+                            int reqId = sc.nextInt();
+                            city.markComplete(reqId);
+                            HistoryManager.updateStatus(reqId);
                         }
                         case 8 -> HistoryManager.showMunicipalHistory();
                         case 9 -> {

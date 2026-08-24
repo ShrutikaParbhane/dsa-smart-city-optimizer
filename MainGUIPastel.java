@@ -43,6 +43,18 @@ public class MainGUIPastel {
     private static GraphPanel graphPanel;
 
     public static void main(String[] args) {
+        // Load history and restore queued requests
+        HistoryManager.loadHistoryFromFile(REQUESTS_FILE);
+        for (Request r : HistoryManager.getAllRequests()) {
+            if ("Queued".equalsIgnoreCase(r.status)) {
+                if (r.priority == 0) {
+                    city.requestQueue.addFirst(r);
+                } else {
+                    city.requestQueue.addLast(r);
+                }
+            }
+        }
+
         // Use Swing thread
         SwingUtilities.invokeLater(MainGUIPastel::createAndShowLogin);
     }
@@ -408,7 +420,7 @@ public class MainGUIPastel {
                 String emergencyArea = (String) cbArea.getSelectedItem();
                 String resourceType = (String) cbType.getSelectedItem();
                 int priority = pri.getSelectedIndex();
-                Request req = new Request(currentUser, resourceType, emergencyArea, priority);
+                Request req = new Request(currentUser, resourceType, emergencyArea, priority, HistoryManager.getNextSequenceNum());
                 Resource allocated = city.allocateResource(req);
                 if (allocated != null) {
                     req.allocatedResource = allocated.id;

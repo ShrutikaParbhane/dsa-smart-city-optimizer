@@ -7,18 +7,56 @@ class AccountManager {
     private static Map<String, String> accounts = new HashMap<>();
     private static Map<String, String> roles = new HashMap<>();
 
+    private static String hashPassword(String password) {
+        try {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(password.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : hash) {
+                String hex = Integer.toHexString(0xff & b);
+                if (hex.length() == 1) hexString.append('0');
+                hexString.append(hex);
+            }
+            return hexString.toString();
+        } catch (Exception e) {
+            return password;
+        }
+    }
+
     static {
+        boolean rewritten = false;
+        List<String[]> loaded = new ArrayList<>();
         try (BufferedReader br = new BufferedReader(new FileReader(FILE_NAME))) {
             String line;
             while ((line = br.readLine()) != null) {
                 String[] parts = line.split(",");
                 if (parts.length == 3) {
-                    accounts.put(parts[0], parts[1]);
-                    roles.put(parts[0], parts[2]);
+                    String id = parts[0];
+                    String pw = parts[1];
+                    String role = parts[2];
+                    
+                    if (!(pw.length() == 64 && pw.matches("[0-9a-fA-F]+"))) {
+                        pw = hashPassword(pw);
+                        rewritten = true;
+                    }
+                    accounts.put(id, pw);
+                    roles.put(id, role);
+                    loaded.add(new String[]{id, pw, role});
                 }
             }
         } catch (IOException e) {
             // File may not exist initially
+        }
+        
+        if (rewritten && !loaded.isEmpty()) {
+            try (BufferedWriter bw = new BufferedWriter(new FileWriter(FILE_NAME))) {
+                for (String[] act : loaded) {
+                    bw.write(act[0] + "," + act[1] + "," + act[2]);
+                    bw.newLine();
+                }
+            } catch (IOException e) {
+                System.out.println("Error upgrading accounts database.");
+            }
         }
     }
 
@@ -36,7 +74,8 @@ class AccountManager {
         String id = sc.next();
         System.out.print("Enter Password: ");
         String pw = sc.next();
-        if (accounts.containsKey(id) && accounts.get(id).equals(pw)) {
+        String hashed = hashPassword(pw);
+        if (accounts.containsKey(id) && accounts.get(id).equals(hashed)) {
             System.out.println("Login successful.");
             return id;
         } else {
@@ -62,9 +101,10 @@ class AccountManager {
             return null;
         }
 
-        accounts.put(id, pw);
+        String hashed = hashPassword(pw);
+        accounts.put(id, hashed);
         roles.put(id, role);
-        saveAccount(id, pw, role);
+        saveAccount(id, hashed, role);
         System.out.println("Account created successfully.");
         return id;
     }
@@ -90,14 +130,16 @@ class Resource {
 class Request {
     String requesterID, type, location, status, allocatedResource;
     int priority;
+    int sequenceNum;
 
-    Request(String requesterID, String type, String location, int priority) {
+    Request(String requesterID, String type, String location, int priority, int sequenceNum) {
         this.requesterID = requesterID;
         this.type = type;
         this.location = location;
         this.priority = priority;
         this.status = "Pending";
         this.allocatedResource = "None";
+        this.sequenceNum = sequenceNum;
     }
 }
 
@@ -130,7 +172,11 @@ class CityGraph {
     java.util.function.Consumer<Request> onQueueDispatchListener = null;
 
     void addArea(String area) {
-        adj.putIfAbsent(area, new HashMap<>());
+        if (adj.containsKey(area)) {
+            System.out.println("Area already exists!");
+            return;
+        }
+        adj.put(area, new HashMap<>());
         routeCache.clear();
     }
 
@@ -140,6 +186,10 @@ class CityGraph {
             System.out.println("One or both areas not found.");
             return;
         }
+        if (adj.get(a).containsKey(b)) {
+            System.out.println("Road already exists between these two areas!");
+            return;
+        }
         adj.get(a).put(b, distance);
         adj.get(b).put(a, distance);
         routeCache.clear();
@@ -147,7 +197,11 @@ class CityGraph {
     }
 
     void addResourceCenter(String area) {
-        resources.putIfAbsent(area, new ArrayList<>());
+        if (resources.containsKey(area)) {
+            System.out.println("Resource center already exists at this area!");
+            return;
+        }
+        resources.put(area, new ArrayList<>());
         System.out.println("Resource center added at " + area);
     }
 
@@ -155,6 +209,15 @@ class CityGraph {
         if (!resources.containsKey(area)) {
             System.out.println("Resource center not found for area.");
             return;
+        }
+        // Duplicate ID check globally
+        for (List<Resource> list : resources.values()) {
+            for (Resource existing : list) {
+                if (existing.id.equalsIgnoreCase(r.id)) {
+                    System.out.println("Resource ID already exists globally!");
+                    return;
+                }
+            }
         }
         resources.get(area).add(r);
         System.out.println("Resource added successfully at " + area);
@@ -180,6 +243,22 @@ class CityGraph {
                         " | Available: " + r.available);
             }
         }
+    }
+
+    // Helper to calculate total path distance
+    int getPathDistance(List<String> path) {
+        if (path.isEmpty()) return Integer.MAX_VALUE;
+        int totalDist = 0;
+        for (int i = 0; i < path.size() - 1; i++) {
+            String u = path.get(i);
+            String v = path.get(i + 1);
+            if (adj.containsKey(u) && adj.get(u).containsKey(v)) {
+                totalDist += adj.get(u).get(v);
+            } else {
+                return Integer.MAX_VALUE;
+            }
+        }
+        return totalDist;
     }
 
     // Modified: Dijkstra's algorithm for weighted shortest path with LRU caching
@@ -234,22 +313,39 @@ class CityGraph {
     Resource allocateResource(Request req) {
         String emergencyArea = req.location;
         String type = req.type;
+        
+        Resource bestResource = null;
+        String bestArea = null;
+        int minDistance = Integer.MAX_VALUE;
+        List<String> bestPath = null;
+
         for (String area : resources.keySet()) {
             for (Resource r : resources.get(area)) {
                 if (r.type.equalsIgnoreCase(type) && r.available) {
-                    r.available = false;
                     List<String> path = shortestPath(area, emergencyArea);
-                    System.out.println("\nAllocated " + r.type + " (" + r.id + ") from " + area);
-                    System.out.println("Driver: " + r.driverName);
-                    if (path.isEmpty()) {
-                        System.out.println("No direct path found.");
-                    } else {
-                        System.out.println("Shortest path: " + path);
+                    int distance = getPathDistance(path);
+                    if (distance < minDistance) {
+                        minDistance = distance;
+                        bestResource = r;
+                        bestArea = area;
+                        bestPath = path;
                     }
-                    return r;
                 }
             }
         }
+
+        if (bestResource != null) {
+            bestResource.available = false; // Safe lock: only lock after route selection confirmation
+            System.out.println("\nAllocated " + bestResource.type + " (" + bestResource.id + ") from " + bestArea);
+            System.out.println("Driver: " + bestResource.driverName);
+            if (bestPath.isEmpty()) {
+                System.out.println("No direct path found.");
+            } else {
+                System.out.println("Shortest path: " + bestPath);
+            }
+            return bestResource;
+        }
+
         // If not allocated, add to queue
         req.status = "Queued";
         if (req.priority == 0) {
@@ -282,32 +378,50 @@ class CityGraph {
             return;
         }
 
-        // Check Deque requestQueue for any matching queued requests
-        Iterator<Request> it = requestQueue.iterator();
-        while (it.hasNext()) {
-            Request pending = it.next();
-            if (pending.type.equalsIgnoreCase(freedResource.type)) {
-                freedResource.available = false;
-                pending.allocatedResource = freedResource.id;
-                pending.status = "Assigned";
-
-                System.out.println("\n[Queue Dispatch] Automatically assigning freed resource " + freedResource.id + " to queued request from " + pending.requesterID);
-                List<String> path = shortestPath(freedArea, pending.location);
-                System.out.println("Driver: " + freedResource.driverName);
-                if (path.isEmpty()) {
-                    System.out.println("No direct path found.");
-                } else {
-                    System.out.println("Shortest path: " + path);
-                }
-
-                // Trigger listener callback for persistence sync in GUI
-                if (onQueueDispatchListener != null) {
-                    onQueueDispatchListener.accept(pending);
-                }
-
-                it.remove();
-                break;
+        // Priority + Nearest scheduling optimization for waiting requests in the queue
+        List<Request> candidates = new ArrayList<>();
+        for (Request req : requestQueue) {
+            if (req.type.equalsIgnoreCase(freedResource.type)) {
+                candidates.add(req);
             }
+        }
+
+        if (!candidates.isEmpty()) {
+            final String sourceArea = freedArea;
+            candidates.sort((r1, r2) -> {
+                // 1. Priority (High priority first)
+                if (r1.priority != r2.priority) {
+                    return Integer.compare(r1.priority, r2.priority);
+                }
+                // 2. Nearest distance
+                int dist1 = getPathDistance(shortestPath(sourceArea, r1.location));
+                int dist2 = getPathDistance(shortestPath(sourceArea, r2.location));
+                if (dist1 != dist2) {
+                    return Integer.compare(dist1, dist2);
+                }
+                // 3. Sequence order
+                return Integer.compare(r1.sequenceNum, r2.sequenceNum);
+            });
+
+            Request pending = candidates.get(0);
+            freedResource.available = false;
+            pending.allocatedResource = freedResource.id;
+            pending.status = "Assigned";
+
+            System.out.println("\n[Queue Dispatch] Automatically assigning freed resource " + freedResource.id + " to queued request from " + pending.requesterID);
+            List<String> path = shortestPath(freedArea, pending.location);
+            System.out.println("Driver: " + freedResource.driverName);
+            if (path.isEmpty()) {
+                System.out.println("No direct path found.");
+            } else {
+                System.out.println("Shortest path: " + path);
+            }
+
+            if (onQueueDispatchListener != null) {
+                onQueueDispatchListener.accept(pending);
+            }
+
+            requestQueue.remove(pending);
         }
     }
 }
@@ -326,6 +440,42 @@ class HistoryManager {
             if (r.allocatedResource.equals(resourceID)) {
                 r.status = "Completed";
             }
+        }
+    }
+
+    static int getNextSequenceNum() {
+        return requestCounter;
+    }
+
+    static Collection<Request> getAllRequests() {
+        return allRequests.values();
+    }
+
+    static void loadHistoryFromFile(String filename) {
+        allRequests.clear();
+        requestCounter = 1;
+        File file = new File(filename);
+        if (!file.exists()) return;
+        try (BufferedReader br = new BufferedReader(new FileReader(file))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                String[] parts = line.split("\\|", -1);
+                if (parts.length >= 6) {
+                    String reqId = parts[0];
+                    String type = parts[1];
+                    String loc = parts[2];
+                    int priority = Integer.parseInt(parts[3]);
+                    String status = parts[4];
+                    String allocated = parts[5];
+                    
+                    Request req = new Request(reqId, type, loc, priority, requestCounter);
+                    req.status = status;
+                    req.allocatedResource = allocated;
+                    allRequests.put(requestCounter++, req);
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
         }
     }
 
@@ -362,6 +512,18 @@ public class Main {
     public static void main(String[] args) {
         Scanner sc = new Scanner(System.in);
         CityGraph city = new CityGraph();
+
+        // Load history and restore queued requests
+        HistoryManager.loadHistoryFromFile("requests.txt");
+        for (Request r : HistoryManager.getAllRequests()) {
+            if ("Queued".equalsIgnoreCase(r.status)) {
+                if (r.priority == 0) {
+                    city.requestQueue.addFirst(r);
+                } else {
+                    city.requestQueue.addLast(r);
+                }
+            }
+        }
 
         while (true) {
             System.out.println("\n===== SMART CITY EMERGENCY RESOURCE OPTIMIZER =====");
@@ -466,7 +628,7 @@ public class Main {
                             String type = sc.next();
                             System.out.print("Enter priority (0=High, 1=Medium, 2=Low): ");
                             int pri = sc.nextInt();
-                            Request req = new Request(userID, type, ea, pri);
+                            Request req = new Request(userID, type, ea, pri, HistoryManager.getNextSequenceNum());
                             Resource allocated = city.allocateResource(req);
                             if (allocated != null) {
                                 req.allocatedResource = allocated.id;

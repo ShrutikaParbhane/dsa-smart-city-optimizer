@@ -50,11 +50,7 @@ public class MainGUIPastel {
         HistoryManager.loadHistoryFromFile(REQUESTS_FILE);
         for (Request r : HistoryManager.getAllRequests()) {
             if ("Queued".equalsIgnoreCase(r.status)) {
-                if (r.priority == 0) {
-                    city.requestQueue.addFirst(r);
-                } else {
-                    city.requestQueue.addLast(r);
-                }
+                city.requestQueue.addLast(r);
             }
         }
 
@@ -397,7 +393,7 @@ public class MainGUIPastel {
                 int reqId = activeReqIds.get(index);
                 city.markComplete(reqId);
                 HistoryManager.updateStatus(reqId);
-                updateRequestsFileStatus(reqId, "Completed");
+                HistoryManager.updateRequestsFileStatus(REQUESTS_FILE, reqId, "Completed");
                 appendOutput("Request #" + reqId + " marked complete.");
                 graphPanel.repaint();
             }
@@ -435,7 +431,7 @@ public class MainGUIPastel {
                     JOptionPane.showMessageDialog(null, "No available resource of that type. Request has been queued.");
                 }
                 HistoryManager.addRequest(req);
-                appendRequestToFile(req);
+                HistoryManager.appendRequestToFile(REQUESTS_FILE, req);
                 appendOutput("Request created: " + req.type + " at " + req.location + " (status: " + req.status + ")");
                 graphPanel.repaint();
             }
@@ -460,7 +456,7 @@ public class MainGUIPastel {
         // Sync queue dispatches with the GUI and database files
         city.onQueueDispatchListener = pending -> {
             appendOutput("[Queue Dispatch] Automatically assigned freed resource " + pending.allocatedResource + " to queued request from " + pending.requesterID);
-            updateRequestsFileStatusForQueued(pending);
+            HistoryManager.updateRequestsFileStatusForQueued(REQUESTS_FILE, pending);
             graphPanel.repaint();
         };
     }
@@ -609,80 +605,7 @@ public class MainGUIPastel {
         return baos.toString();
     }
 
-    // Append request to requests.txt for persistence
-    private static void appendRequestToFile(Request req) {
-        try (BufferedWriter bw = new BufferedWriter(new FileWriter(REQUESTS_FILE, true))) {
-            // use pipe-separated format: RequestID|RequesterID|Type|Location|Priority|Status|AllocatedResource
-            String line = req.sequenceNum + "|" + escape(req.requesterID) + "|" + escape(req.type) + "|" + escape(req.location) + "|" + req.priority + "|" + escape(req.status) + "|" + escape(req.allocatedResource);
-            bw.write(line);
-            bw.newLine();
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
-
-    // Update queued request in requests.txt to Assigned
-    private static void updateRequestsFileStatusForQueued(Request req) {
-        File infile = new File(REQUESTS_FILE);
-        if (!infile.exists()) return;
-        File temp = new File(REQUESTS_FILE + ".tmp");
-        try (BufferedReader br = new BufferedReader(new FileReader(infile));
-             BufferedWriter bw = new BufferedWriter(new FileWriter(temp))) {
-            String line;
-            while ((line = br.readLine()) != null) {
-                String[] parts = line.split("\\|", -1);
-                if (parts.length >= 7 && Integer.parseInt(parts[0]) == req.sequenceNum) {
-                    parts[5] = "Assigned";
-                    parts[6] = req.allocatedResource;
-                    bw.write(String.join("|", parts));
-                } else {
-                    bw.write(line);
-                }
-                bw.newLine();
-            }
-        } catch (IOException | NumberFormatException ex) {
-            ex.printStackTrace();
-            return;
-        }
-        if (!infile.delete()) {
-            System.err.println("Could not delete original requests file.");
-            return;
-        }
-        if (!temp.renameTo(infile)) {
-            System.err.println("Could not rename temp requests file.");
-        }
-    }
-
-    // Update status in requests.txt when marking complete
-    private static void updateRequestsFileStatus(int requestId, String newStatus) {
-        File infile = new File(REQUESTS_FILE);
-        if (!infile.exists()) return;
-        File temp = new File(REQUESTS_FILE + ".tmp");
-        try (BufferedReader br = new BufferedReader(new FileReader(infile));
-             BufferedWriter bw = new BufferedWriter(new FileWriter(temp))) {
-            String line;
-            while ((line = br.readLine()) != null) {
-                String[] parts = line.split("\\|", -1);
-                if (parts.length >= 7 && Integer.parseInt(parts[0]) == requestId) {
-                    parts[5] = newStatus;
-                    bw.write(String.join("|", parts));
-                } else {
-                    bw.write(line);
-                }
-                bw.newLine();
-            }
-        } catch (IOException | NumberFormatException ex) {
-            ex.printStackTrace();
-            return;
-        }
-        if (!infile.delete()) {
-            System.err.println("Could not delete original requests file.");
-            return;
-        }
-        if (!temp.renameTo(infile)) {
-            System.err.println("Could not rename temp requests file.");
-        }
-    }
+    // Unified file database operations are delegated to HistoryManager
 
     private static String escape(String s) {
         return s == null ? "" : s.replace("|", "/");

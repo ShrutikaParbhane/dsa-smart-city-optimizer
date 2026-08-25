@@ -388,7 +388,7 @@ class CityGraph {
         Collections.reverse(path);
 
         routeCache.put(cacheKey, path);
-        return path;
+        return new ArrayList<>(path);
     }
 
     Resource allocateResource(Request req) {
@@ -429,11 +429,7 @@ class CityGraph {
 
         // If not allocated, add to queue
         req.status = "Queued";
-        if (req.priority == 0) {
-            requestQueue.addFirst(req);
-        } else {
-            requestQueue.addLast(req);
-        }
+        requestQueue.addLast(req);
         System.out.println("No available resource of type " + type + ". Request queued (Priority: " + req.priority + ").");
         return null;
     }
@@ -515,6 +511,8 @@ class CityGraph {
 
             if (onQueueDispatchListener != null) {
                 onQueueDispatchListener.accept(pending);
+            } else {
+                HistoryManager.updateRequestsFileStatusForQueued("requests.txt", pending);
             }
 
             requestQueue.remove(pending);
@@ -557,23 +555,102 @@ class HistoryManager {
             String line;
             while ((line = br.readLine()) != null) {
                 String[] parts = line.split("\\|", -1);
-                if (parts.length >= 6) {
-                    String reqId = parts[0];
-                    String type = parts[1];
-                    String loc = parts[2];
-                    int priority = Integer.parseInt(parts[3]);
-                    String status = parts[4];
-                    String allocated = parts[5];
+                if (parts.length >= 7) {
+                    int reqId = Integer.parseInt(parts[0]);
+                    String reqUser = parts[1];
+                    String type = parts[2];
+                    String loc = parts[3];
+                    int priority = Integer.parseInt(parts[4]);
+                    String status = parts[5];
+                    String allocated = parts[6];
                     
-                    Request req = new Request(reqId, type, loc, priority, requestCounter);
+                    Request req = new Request(reqUser, type, loc, priority, reqId);
                     req.status = status;
                     req.allocatedResource = allocated;
-                    allRequests.put(requestCounter++, req);
+                    allRequests.put(reqId, req);
+                    if (reqId >= requestCounter) {
+                        requestCounter = reqId + 1;
+                    }
                 }
             }
+        } catch (IOException | NumberFormatException e) {
+            e.printStackTrace();
+        }
+    }
+
+    static void appendRequestToFile(String filename, Request req) {
+        try (BufferedWriter bw = new BufferedWriter(new FileWriter(filename, true))) {
+            String line = req.sequenceNum + "|" + escape(req.requesterID) + "|" + escape(req.type) + "|" + escape(req.location) + "|" + req.priority + "|" + escape(req.status) + "|" + escape(req.allocatedResource);
+            bw.write(line);
+            bw.newLine();
         } catch (IOException e) {
             e.printStackTrace();
         }
+    }
+
+    static void updateRequestsFileStatusForQueued(String filename, Request req) {
+        File infile = new File(filename);
+        if (!infile.exists()) return;
+        File temp = new File(filename + ".tmp");
+        try (BufferedReader br = new BufferedReader(new FileReader(infile));
+             BufferedWriter bw = new BufferedWriter(new FileWriter(temp))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                String[] parts = line.split("\\|", -1);
+                if (parts.length >= 7 && Integer.parseInt(parts[0]) == req.sequenceNum) {
+                    parts[5] = "Assigned";
+                    parts[6] = req.allocatedResource;
+                    bw.write(String.join("|", parts));
+                } else {
+                    bw.write(line);
+                }
+                bw.newLine();
+            }
+        } catch (IOException | NumberFormatException ex) {
+            ex.printStackTrace();
+            return;
+        }
+        if (!infile.delete()) {
+            System.err.println("Could not delete original requests file.");
+            return;
+        }
+        if (!temp.renameTo(infile)) {
+            System.err.println("Could not rename temp requests file.");
+        }
+    }
+
+    static void updateRequestsFileStatus(String filename, int requestId, String newStatus) {
+        File infile = new File(filename);
+        if (!infile.exists()) return;
+        File temp = new File(filename + ".tmp");
+        try (BufferedReader br = new BufferedReader(new FileReader(infile));
+             BufferedWriter bw = new BufferedWriter(new FileWriter(temp))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                String[] parts = line.split("\\|", -1);
+                if (parts.length >= 7 && Integer.parseInt(parts[0]) == requestId) {
+                    parts[5] = newStatus;
+                    bw.write(String.join("|", parts));
+                } else {
+                    bw.write(line);
+                }
+                bw.newLine();
+            }
+        } catch (IOException | NumberFormatException ex) {
+            ex.printStackTrace();
+            return;
+        }
+        if (!infile.delete()) {
+            System.err.println("Could not delete original requests file.");
+            return;
+        }
+        if (!temp.renameTo(infile)) {
+            System.err.println("Could not rename temp requests file.");
+        }
+    }
+
+    private static String escape(String s) {
+        return s == null ? "" : s.replace("|", "/");
     }
 
     static void showMunicipalHistory() {
@@ -609,16 +686,14 @@ public class Main {
     public static void main(String[] args) {
         Scanner sc = new Scanner(System.in);
         CityGraph city = new CityGraph();
+        // Load map network configuration
+        city.loadMapFromFile("map.txt");
 
         // Load history and restore queued requests
         HistoryManager.loadHistoryFromFile("requests.txt");
         for (Request r : HistoryManager.getAllRequests()) {
             if ("Queued".equalsIgnoreCase(r.status)) {
-                if (r.priority == 0) {
-                    city.requestQueue.addFirst(r);
-                } else {
-                    city.requestQueue.addLast(r);
-                }
+                city.requestQueue.addLast(r);
             }
         }
 
@@ -697,6 +772,7 @@ public class Main {
                             int reqId = sc.nextInt();
                             city.markComplete(reqId);
                             HistoryManager.updateStatus(reqId);
+                            HistoryManager.updateRequestsFileStatus("requests.txt", reqId, "Completed");
                         }
                         case 8 -> HistoryManager.showMunicipalHistory();
                         case 9 -> {
@@ -732,6 +808,7 @@ public class Main {
                                 req.status = "Assigned";
                             }
                             HistoryManager.addRequest(req);
+                            HistoryManager.appendRequestToFile("requests.txt", req);
                         }
                         case 3 -> HistoryManager.showUserHistory(userID);
                         case 4 -> {
